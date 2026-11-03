@@ -129,7 +129,7 @@ graph TD
         R["@testing-library/react"]
         V["@testing-library/vue"]
         A["@testing-library/angular"]
-        S["@testing-library/svelte / preact / solid"]
+        S["@testing-library/svelte, /preact<br/>and @solidjs/testing-library"]
     end
     subgraph Companions
         UE["@testing-library/user-event<br/>realistic interaction"]
@@ -494,11 +494,12 @@ Reach for `fireEvent` only when no user gesture produces the event: a `scroll` o
 Since v14, call `userEvent.setup()` once per test, before rendering, and use the returned instance. The session shares keyboard and pointer state across calls, so held modifier keys and pointer position carry over just as they would for a person.
 
 ```typescript
+import type { ReactElement } from 'react';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 // 1. A setup helper keeps every test consistent
-function setup(ui: React.ReactElement, options?: Parameters<typeof userEvent.setup>[0]) {
+function setup(ui: ReactElement, options?: Parameters<typeof userEvent.setup>[0]) {
   return { user: userEvent.setup(options), ...render(ui) };
 }
 
@@ -531,7 +532,7 @@ Useful `setup()` options:
 | `pointerEventsCheck` | `PointerEventsCheckLevel.EachApiCall` | How often to verify `pointer-events`. Lower it for speed in huge trees. |
 | `skipHover` | `false` | Skip the hover events that precede a click. |
 | `applyAccept` | `true` | Have `upload` respect the input's `accept` attribute. |
-| `writeToClipboard` | `false` | Write copied or cut data into the stubbed `navigator.clipboard`. |
+| `writeToClipboard` | `true` with `setup()` (`false` for the direct API) | Write copied or cut data into the stubbed `navigator.clipboard`. |
 
 The top-level shortcuts (`userEvent.click(el)`) still exist and call `setup()` internally each time, which loses state between calls. Prefer the session.
 
@@ -712,6 +713,7 @@ test('loads, then lists users', async () => {
 });
 
 test('a non-DOM side effect eventually happens', async () => {
+  const user = userEvent.setup();
   const track = vi.fn();
   render(<Checkout onTrack={track} />);
   await user.click(screen.getByRole('button', { name: 'Pay' }));
@@ -757,7 +759,7 @@ await act(async () => {
 });
 ```
 
-React 19 deprecates `act` from `react-dom/test-utils` in favour of the `act` exported from `react`. RTL re-exports a compatible `act`, so imports from `@testing-library/react` keep working.
+Since React 18.3, `act` from `react-dom/test-utils` is deprecated in favour of the `act` exported from `react`, and React 19 removed the rest of `react-dom/test-utils`. RTL re-exports a compatible `act`, so imports from `@testing-library/react` keep working.
 
 ### 4.3 Fake Timers with user-event
 
@@ -863,7 +865,7 @@ test('shows an alert when the API fails', async () => {
 });
 ```
 
-In jsdom, relative URLs resolve against `location.href` (`http://localhost:3000/` by default in Vitest's jsdom environment), so a handler for `/api/users` matches. If your client builds absolute URLs from an environment variable, match that host in the handler.
+Node's own `fetch` rejects relative URLs, but MSW's fetch interceptor resolves them against `location.href` when a `location` exists. Vitest's jsdom environment sets it to `http://localhost:3000/` by default, so `fetch('/api/users')` reaches the `/api/users` handler. If your client builds absolute URLs from an environment variable, match that host in the handler.
 
 ---
 
@@ -1191,11 +1193,14 @@ Test data belongs in small factory functions (`buildUser({ name: 'Ada' })`) rath
 ### 6.2 Debugging Failing Queries
 
 ```typescript
-import { logRoles, prettyDOM, screen, configure } from '@testing-library/react';
+import { logRoles, prettyDOM, render, screen } from '@testing-library/react';
+import { LoginForm } from '../src/components/LoginForm';
+
+const { container } = render(<LoginForm onSubmit={() => {}} />);
 
 // 1. Print the whole document, or one element, with syntax highlighting
 screen.debug();
-screen.debug(screen.getByRole('form'), 20_000); // second arg: max characters
+screen.debug(screen.getByRole('form', { name: 'Sign in' }), 20_000); // second arg: max characters
 
 // 2. List every role and accessible name: the fastest way to fix a ByRole query
 logRoles(document.body);
@@ -1210,6 +1215,9 @@ screen.logTestingPlaygroundURL();
 `configure` adjusts the library globally. Put it in the setup file.
 
 ```typescript
+// tests/setup.ts
+import { configure } from '@testing-library/react';
+
 configure({
   // Fail when a better query exists (e.g. getByTestId where getByRole works)
   throwSuggestions: true,
@@ -1243,17 +1251,20 @@ A short triage list for "unable to find role":
 Two ESLint plugins catch most misuse at review time.
 
 ```bash
-npm install -D eslint eslint-plugin-testing-library eslint-plugin-jest-dom
+npm install -D eslint typescript-eslint eslint-plugin-testing-library eslint-plugin-jest-dom
 ```
 
 ```javascript
 // eslint.config.js
+import tseslint from 'typescript-eslint';
 import testingLibrary from 'eslint-plugin-testing-library';
 import jestDom from 'eslint-plugin-jest-dom';
 
 const testFiles = ['tests/**/*.{ts,tsx}', '**/*.test.{ts,tsx}'];
 
 export default [
+  // 0. ESLint's default parser cannot read type annotations or JSX in .tsx files
+  { files: testFiles, languageOptions: { parser: tseslint.parser } },
   // 1. Each plugin preset is its own config object so their `plugins` keys do not collide
   { files: testFiles, ...testingLibrary.configs['flat/react'] }, // flat/vue, flat/angular, flat/dom also exist
   { files: testFiles, ...jestDom.configs['flat/recommended'] },
@@ -1281,7 +1292,8 @@ Rules that pay for themselves:
 | `testing-library/prefer-screen-queries` | Destructured queries instead of `screen` |
 | `testing-library/no-container` / `no-node-access` | `container.querySelector` and `.parentElement` traversal |
 | `testing-library/no-unnecessary-act` | `act` around calls that already use it |
-| `jest-dom/prefer-in-document`, `prefer-enabled-disabled` | `expect(x).not.toBeNull()` instead of `toBeInTheDocument()` |
+| `jest-dom/prefer-in-document` | `expect(x).not.toBeNull()` instead of `toBeInTheDocument()` |
+| `jest-dom/prefer-enabled-disabled` | `toHaveAttribute('disabled')` instead of `toBeDisabled()` |
 
 ### 6.4 Coverage, CI & Docker
 
@@ -1308,7 +1320,7 @@ npx vitest run --coverage --reporter=default --reporter=junit --outputFile=repor
 
 Coverage is a floor, not a goal. A component test that clicks every button but asserts nothing gives 100% line coverage and zero confidence. Review assertions, not percentages.
 
-Sharding splits a large suite across CI machines. With $N$ test files and $S$ shards each shard runs roughly $N / S$ files, so 1,200 files over 6 shards is about 200 files per machine:
+Sharding splits a large suite across CI machines. Each shard runs roughly the number of test files divided by the number of shards, so 1,200 files over 6 shards is about 200 files per machine:
 
 ```bash
 npx vitest run --shard=1/6 --reporter=blob
@@ -1321,7 +1333,7 @@ The repository's `Dockerfile` runs type-checking and the full suite in the build
 ```dockerfile
 # Production Dockerfile for the Testing Library Playground
 # Stage 1 installs, type-checks and runs the Vitest suite; the image only builds if every test passes.
-FROM node:22-alpine AS builder
+FROM node:24-alpine AS builder
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -1331,11 +1343,12 @@ COPY tests ./tests
 ENV CI=true
 RUN npm test && npm run build
 
-# Stage 2 serves the static bundle with nginx.
-FROM nginx:stable-alpine AS runner
-COPY --from=builder /app/dist /usr/share/nginx/html
-EXPOSE 80
-HEALTHCHECK CMD wget -qO- http://localhost/ >/dev/null || exit 1
+# Stage 2 serves the static bundle with nginx running as a non-root user on port 8080.
+FROM nginxinc/nginx-unprivileged:stable-alpine AS runner
+COPY --from=builder --chown=nginx:nginx /app/dist /usr/share/nginx/html
+USER nginx
+EXPOSE 8080
+HEALTHCHECK CMD wget -qO- http://127.0.0.1:8080/ >/dev/null || exit 1
 ```
 
 ```yaml
@@ -1349,10 +1362,10 @@ jobs:
       matrix:
         shard: [1, 2, 3]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
       - run: npm ci
       - run: npx vitest run --shard=${{ matrix.shard }}/3
@@ -1375,7 +1388,7 @@ flowchart TD
 | Component (real browser) | Vitest Browser Mode with a Playwright provider | ~10-100 ms | Layout, scroll, drag, `matchMedia`, focus visibility |
 | End to end | Playwright, Cypress | seconds | Critical paths: sign-up, checkout, auth |
 
-The query philosophy carries over. Playwright's `page.getByRole('button', { name: 'Save' })` and Cypress's `@testing-library/cypress` commands use the same role and name semantics, so the habits from this guide apply at every layer. A healthy ratio for a product team might be $70\% / 20\% / 10\%$ across the three layers, adjusted for how much of the product's risk lives in layout.
+The query philosophy carries over. Playwright's `page.getByRole('button', { name: 'Save' })` and Cypress's `@testing-library/cypress` commands use the same role and name semantics, so the habits from this guide apply at every layer. A healthy ratio for a product team might be roughly 70/20/10 across the three layers, adjusted for how much of the product's risk lives in layout.
 
 ---
 
